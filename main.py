@@ -28,7 +28,7 @@ args = parser.parse_args()
  
 num_epochs = 120
 
-lr = 0.0005
+lr = 0.0001
 num_layers = 10
 num_f_maps = 64
 features_dim = 2048
@@ -95,4 +95,5 @@ if args.action == "predict":
     batch_gen_tst = BatchGenerator(num_classes, actions_dict, gt_path, features_path, sample_rate)
     batch_gen_tst.read_data(vid_list_file_tst)
     trainer.predict(model_dir, results_dir, features_path, batch_gen_tst, num_epochs, actions_dict, sample_rate)
-
+    print("Evaluating the results...")
+    

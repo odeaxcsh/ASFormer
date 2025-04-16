@@ -1,0 +1,11 @@
+data/
+raw_labels/
+raw_videos/
+augmented_videos/
+augmented_labels/
+visual_features/
+models/
+results/
+__pycache__/
+
+annotations.xml

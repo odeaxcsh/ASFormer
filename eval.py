@@ -131,7 +131,6 @@ def segment_bars_with_confidence(save_path, confidence, *labels):
     ax4.set_ylim(0, 1)
     ax4.plot(range(len(confidence)), confidence)
     ax4.plot(range(len(confidence)), [0.3] * len(confidence), color='red', label='0.5')
- 
     if save_path is not None:
         plt.savefig(save_path)
     else:

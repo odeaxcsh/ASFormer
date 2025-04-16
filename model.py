@@ -69,7 +69,7 @@ class AttLayer(nn.Module):
         '''
         window_mask = torch.zeros((1, self.bl, self.bl + 2* (self.bl //2)))
         for i in range(self.bl):
-            window_mask[:, :, i:i+self.bl] = 1
+            window_mask[:, i, i:i+self.bl] = 1
         return window_mask.to(device)
     
     def forward(self, x1, x2, mask):
@@ -92,7 +92,6 @@ class AttLayer(nn.Module):
         elif self.att_type == 'sliding_att':
             return self._sliding_window_self_att(query, key, value, mask)
 
-    
     def _normal_self_att(self,q,k,v, mask):
         m_batchsize, c1, L = q.size()
         _,c2,L = k.size()
@@ -405,7 +404,7 @@ class Trainer:
             while batch_gen_tst.has_next():
                 batch_input, batch_target, mask, vids = batch_gen_tst.next_batch(1)
                 vid = vids[0]
-#                 print(vid)
+                print(vid)
                 features = np.load(features_path + vid.split('.')[0] + '.npy')
                 features = features[:, ::sample_rate]
 
@@ -413,7 +412,6 @@ class Trainer:
                 input_x.unsqueeze_(0)
                 input_x = input_x.to(device)
                 predictions = self.model(input_x, torch.ones(input_x.size(), device=device))
-
                 for i in range(len(predictions)):
                     confidence, predicted = torch.max(F.softmax(predictions[i], dim=1).data, 1)
                     confidence, predicted = confidence.squeeze(), predicted.squeeze()
