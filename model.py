@@ -316,11 +316,22 @@ class MyTransformer(nn.Module):
  
         return outputs
 
+
+class FocalLoss(nn.Module):
+    def __init__(self, gamma=2, weight=None):
+        super().__init__()
+        self.gamma = gamma
+        self.ce = nn.CrossEntropyLoss(weight=weight, ignore_index=-100)
+
+    def forward(self, inputs, targets):
+        logpt = -self.ce(inputs, targets)
+        pt = torch.exp(logpt)
+        return -((1 - pt) ** self.gamma) * logpt
+    
     
 class Trainer:
     def __init__(self, num_layers, r1, r2, num_f_maps, input_dim, num_classes, channel_masking_rate):
         self.model = MyTransformer(3, num_layers, r1, r2, num_f_maps, input_dim, num_classes, channel_masking_rate)
-        self.ce = nn.CrossEntropyLoss(ignore_index=-100)
 
         print('Model Size: ', sum(p.numel() for p in self.model.parameters()))
         self.mse = nn.MSELoss(reduction='none')
@@ -337,6 +348,8 @@ class Trainer:
         for epoch in range(num_epochs):
             epoch_loss = 0
             correct = 0
+            class_wise_corr = [0] * self.num_classes
+            class_wise_total = [0] * self.num_classes
             total = 0
 
             while batch_gen.has_next():
@@ -344,6 +357,16 @@ class Trainer:
                 batch_input, batch_target, mask = batch_input.to(device), batch_target.to(device), mask.to(device)
                 optimizer.zero_grad()
                 ps = self.model(batch_input, mask)
+
+                weights = torch.zeros(self.num_classes, device=device)
+                for i in range(self.num_classes):
+                    weights[i] = (batch_target == i).float().sum()
+            
+                non_zero_weights_idx = torch.where(weights != 0)[0]
+                weights[non_zero_weights_idx] = 1 / weights[non_zero_weights_idx]
+                weights[non_zero_weights_idx] = weights[non_zero_weights_idx] / torch.sum(weights[non_zero_weights_idx])
+
+                self.ce = FocalLoss(weight=weights)
 
                 loss = 0
                 for p in ps:
@@ -359,12 +382,34 @@ class Trainer:
                 _, predicted = torch.max(ps.data[-1], 1)
                 correct += ((predicted == batch_target).float() * mask[:, 0, :].squeeze(1)).sum().item()
                 total += torch.sum(mask[:, 0, :]).item()
-            
+
+                # with a change of 1 in 100 visualize the prediction and ground truth
+
+                for i in range(self.num_classes):
+                    class_wise_corr[i] += ((predicted == batch_target).float() * mask[:, 0, :].squeeze(1) * (batch_target == i).float()).sum().item()
+                    class_wise_total[i] += ((mask[:, 0, :].squeeze(1) * (batch_target == i).float()).sum().item())
+
+            if (epoch + 1) % 10 == 0 and batch_gen_tst is not None:
+                for i in range(len(ps)):
+                    confidence, predicted = torch.max(F.softmax(ps[i], dim=1).data, 1)
+                    confidence, predicted = confidence.squeeze(), predicted.squeeze()
+
+                    batch_target = batch_target.squeeze()
+                    confidence, predicted = confidence.squeeze(), predicted.squeeze()
+
+                    segment_bars_with_confidence('tmp/{}_stage{}.png'.format(epoch, i),
+                                                confidence.tolist(),
+                                                batch_target.tolist(), predicted.tolist())
+
             
             scheduler.step(epoch_loss)
             batch_gen.reset()
             print("[epoch %d]: epoch loss = %f,   acc = %f" % (epoch + 1, epoch_loss / len(batch_gen.list_of_examples),
                                                                float(correct) / total))
+            
+            accs = [float(class_wise_corr[i]) / class_wise_total[i] if class_wise_total[i] != 0 else 1 for i in range(self.num_classes)]
+            print("Class wise accs: ", [round(acc, 2) for acc in accs])
+            print("--------------------------------------------------")
 
             if (epoch + 1) % 10 == 0 and batch_gen_tst is not None:
                 self.test(batch_gen_tst, epoch)
@@ -376,6 +421,10 @@ class Trainer:
         correct = 0
         total = 0
         if_warp = False  # When testing, always false
+
+        class_wise_corr = [0] * self.num_classes
+        class_wise_total = [0] * self.num_classes
+
         with torch.no_grad():
             while batch_gen_tst.has_next():
                 batch_input, batch_target, mask, vids = batch_gen_tst.next_batch(1, if_warp)
@@ -385,8 +434,15 @@ class Trainer:
                 correct += ((predicted == batch_target).float() * mask[:, 0, :].squeeze(1)).sum().item()
                 total += torch.sum(mask[:, 0, :]).item()
 
+                for i in range(self.num_classes):
+                    class_wise_corr[i] += ((predicted == batch_target).float() * mask[:, 0, :].squeeze(1) * (batch_target == i).float()).sum().item()
+                    class_wise_total[i] += ((mask[:, 0, :].squeeze(1) * (batch_target == i).float()).sum().item())
+        accs = [float(class_wise_corr[i]) / class_wise_total[i] if class_wise_total[i] != 0 else 1 for i in range(self.num_classes)]
+        print("Class wise accs: ", [round(acc, 2) for acc in accs])
+
         acc = float(correct) / total
         print("---[epoch %d]---: tst acc = %f" % (epoch + 1, acc))
+        print("--------------------------------------------------")
 
         self.model.train()
         batch_gen_tst.reset()

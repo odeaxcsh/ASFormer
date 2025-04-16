@@ -7,10 +7,8 @@ import glob
 import tqdm
 
 def load_i3d_model(device):
-    # Load pre-trained I3D (ResNet-50 backbone) from PyTorchVideo
     model = torch.hub.load("facebookresearch/pytorchvideo", "i3d_r50", pretrained=True)
     model.eval().to(device)
-    # Replace final classification layer with identity to get feature vectors
     if hasattr(model, "blocks"):
         try:
             model.blocks[6].proj = torch.nn.Identity()
@@ -20,7 +18,7 @@ def load_i3d_model(device):
     return model
 
 
-def extract_i3d_features(frames, model, device, chunk_size, stride, batch_size=16):
+def extract_i3d_features(frames, model, device, chunk_size=16, stride=1, batch_size=16):
     feats = []
     chunk_batch = []
 
@@ -58,11 +56,13 @@ def extract_i3d_features(frames, model, device, chunk_size, stride, batch_size=1
 
 
 parser = argparse.ArgumentParser(description="Extract I3D features from videos.")
-parser.add_argument("--input_dir", type=str, default="/home/abolfazl/HGR", help="Root directory containing PX subdirectories of videos.")
-parser.add_argument("--output_visual_dir", type=str, default="visual_features", help="Output base directory for I3D visual features.")
+parser.add_argument("--input_dir", type=str, default="raw_videos", help="Root directory containing PX subdirectories of videos.")
+parser.add_argument("--output_dir", type=str, default="visual_features", help="Output base directory for I3D visual features.")
+parser.add_argument("--type", type=str, default="rgb", choices=["rgb", "flow", "diff"], help="Type of feature to extract: rgb, flow, or diff.")
+
 args = parser.parse_args()
 
-os.makedirs(args.output_visual_dir, exist_ok=True)
+os.makedirs(args.output_dir, exist_ok=True)
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 print("Loading I3D model on device:", device)
 i3d_model = load_i3d_model(device)
@@ -83,19 +83,21 @@ for video_path in video_paths:
 
     base_name = os.path.splitext(video_name)[0]
 
-    visual_out_path = os.path.join(args.output_visual_dir, base_name + ".npy")
+    visual_out_path = os.path.join(args.output_dir, base_name + ".npy")
 
     cap = cv2.VideoCapture(video_path)
     if not cap.isOpened():
         print(f"Failed to open video: {video_path}")
         continue
 
+    last_frame = np.zeros((224, 224, 3), dtype=np.uint8)
     frames = []
     while True:
-        ret, frame = cap.read()
+        ret, frame_rgb = cap.read()
         if not ret:
             break
-        frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        frame_rgb = cv2.cvtColor(frame_rgb, cv2.COLOR_BGR2RGB)
+
         # Original Size: (1280 x 720)
         # Crop the center square of size 720x720
         h, w, _ = frame_rgb.shape
@@ -106,22 +108,37 @@ for video_path in video_paths:
         
         # Resize to 224x224 for I3D
         frame_rgb = cv2.resize(frame_rgb, (224, 224))
-        frames.append(frame_rgb)
+        if args.type == "rgb":
+            normalized_frame = frame_rgb.astype(np.float32) / 255.0
+            mean = [0.45, 0.45, 0.45]
+            std = [0.225, 0.225, 0.225]
+            normalized_frame = (normalized_frame - mean) / std
+            frames.append(normalized_frame)
+
+        elif args.type == "flow":
+            frame_rgb = cv2.cvtColor(frame_rgb, cv2.COLOR_RGB2GRAY)
+            flow = cv2.calcOpticalFlowFarneback(last_frame, frame_rgb, None, 0.5, 3, 15, 3, 5, 1.2, 0)
+            frames.append(flow)
+
+        elif args.type == "diff":
+            diff = cv2.absdiff(last_frame, frame_rgb)
+            frames.append(diff)
+
+        last_frame = frame_rgb
+                
     cap.release()
 
-    if video_path == video_paths[0]:
-        for i in range(0, len(frames)):
-            cv2.imshow("frame", frames[i])
-            cv2.waitKey(1)  # Display at 60 FPS
-    cv2.destroyAllWindows()
+    # if video_path == video_paths[0]:
+    #     for i in range(0, len(frames)):
+    #         cv2.imshow("frame", frames[i].transpose(1, 0, 2))
+    #         cv2.waitKey(1)  # Display at 60 FPS
+    # cv2.destroyAllWindows()
     
     if frames:
         print(f"Extracting features from {len(frames)} frames of size {frames[0].shape}...")
+       
         visual_feats = extract_i3d_features(frames, i3d_model, device, chunk_size=30, stride=1)
         
-        frame_means = np.mean(visual_feats, axis=1, keepdims=True)
-        frame_stds = np.std(visual_feats, axis=1, keepdims=True) + 1e-8
-        visual_feats = (visual_feats - frame_means) / frame_stds
 
         np.save(visual_out_path, visual_feats.T)
         print(f"Saved features: {visual_out_path}")

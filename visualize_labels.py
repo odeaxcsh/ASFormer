@@ -72,7 +72,7 @@ def view_video_with_labels(person_folder, video_dir, label_dir):
 
     labels = read_labels(label_path)
     cap = cv2.VideoCapture(str(video_path))
-    writer = cv2.VideoWriter("vis.mp4", cv2.VideoWriter_fourcc(*"mp4v"), cap.get(cv2.CAP_PROP_FPS), (int(cap.get(3)), int(cap.get(4))), True)
+    writer = cv2.VideoWriter("vis.MP4", cv2.VideoWriter_fourcc(*"mp4v"), cap.get(cv2.CAP_PROP_FPS), (int(cap.get(4)), int(cap.get(3))))
 
     if not cap.isOpened():
         print(f"[!] Failed to open video: {video_path}")
