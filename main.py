@@ -40,7 +40,7 @@ channel_mask_rate = 0.3
 sample_rate = 1
 if args.dataset == "Ours":
     lr = 5e-4
-    sample_rate = 1 # @ 30fps
+    sample_rate = 4 # @ 30fps
 
 # sample input features @ 15fps instead of 30 fps
 # for 50salads, and up-sample the output to 30 fps

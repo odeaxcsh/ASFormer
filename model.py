@@ -7,6 +7,9 @@ import copy
 import numpy as np
 import math
 
+from tqdm import tqdm
+from modeling.blocks import MaskMambaBlock, MaskMambaBlock_DBM
+
 from eval import segment_bars_with_confidence
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -227,6 +230,26 @@ class AttModule(nn.Module):
         out = self.dropout(out)
         return (x + out) * mask[:, 0:1, :]
 
+class AttModule_mamba(nn.Module):
+    def __init__(self, dilation, in_channels, out_channels, r1, r2, att_type, stage, alpha, drop_path_rate=0.3):
+        super(AttModule_mamba, self).__init__()
+        self.feed_forward = ConvFeedForward(dilation, in_channels, out_channels)
+        self.instance_norm = nn.InstanceNorm1d(in_channels, track_running_stats=False)
+        self.att_layer = MaskMambaBlock(in_channels, drop_path_rate=drop_path_rate) # dilation
+        # self.att_layer = MaskMambaBlock_DBM(in_channels, drop_path_rate=drop_path_rate) # dilation
+        self.conv_1x1 = nn.Conv1d(in_channels, out_channels, 1)
+        self.dropout = nn.Dropout()
+        self.alpha = alpha
+        
+    def forward(self, x, f, mask):
+        m_batchsize, c1, L = x.size()
+        padding_mask = torch.ones((m_batchsize, 1, L)).to(device) * mask[:,0:1,:]
+        out = self.feed_forward(x)
+        out = self.alpha * self.att_layer(self.instance_norm(out), padding_mask) + out
+        # out = self.conv_1x1(out)
+        out = self.dropout(out)
+        return (x + out) * mask[:, 0:1, :]
+
 
 class PositionalEncoding(nn.Module):
     "Implement the PE function."
@@ -248,12 +271,18 @@ class PositionalEncoding(nn.Module):
         return x + self.pe[:, :, 0:x.shape[2]]
 
 class Encoder(nn.Module):
-    def __init__(self, num_layers, r1, r2, num_f_maps, input_dim, num_classes, channel_masking_rate, att_type, alpha):
+    def __init__(self, num_layers, r1, r2, num_f_maps, input_dim, num_classes, channel_masking_rate, att_type, alpha, mamba=False, drop_path_rate=0.3):
         super(Encoder, self).__init__()
         self.conv_1x1 = nn.Conv1d(input_dim, num_f_maps, 1) # fc layer
-        self.layers = nn.ModuleList(
+        if not mamba:
+            self.layers = nn.ModuleList(
             [AttModule(2 ** i, num_f_maps, num_f_maps, r1, r2, att_type, 'encoder', alpha) for i in # 2**i
              range(num_layers)])
+        else:
+            self.layers = nn.ModuleList(
+                [AttModule_mamba(2 ** i, num_f_maps, num_f_maps, r1, r2, att_type, 'encoder', alpha, drop_path_rate=drop_path_rate) for i in # 2**i
+             range(num_layers)]
+            )
         
         self.conv_out = nn.Conv1d(num_f_maps, num_classes, 1)
         self.dropout = nn.Dropout2d(p=channel_masking_rate)
@@ -281,11 +310,16 @@ class Encoder(nn.Module):
 
 
 class Decoder(nn.Module):
-    def __init__(self, num_layers, r1, r2, num_f_maps, input_dim, num_classes, att_type, alpha):
+    def __init__(self, num_layers, r1, r2, num_f_maps, input_dim, num_classes, att_type, alpha, mamba=False, drop_path_rate=0.3):
         super(Decoder, self).__init__()#         self.position_en = PositionalEncoding(d_model=num_f_maps)
         self.conv_1x1 = nn.Conv1d(input_dim, num_f_maps, 1)
-        self.layers = nn.ModuleList(
+        if not mamba:
+            self.layers = nn.ModuleList(
             [AttModule(2 ** i, num_f_maps, num_f_maps, r1, r2, att_type, 'decoder', alpha) for i in # 2 ** i
+             range(num_layers)])
+        else:
+            self.layers = nn.ModuleList(
+            [AttModule_mamba(2 ** i, num_f_maps, num_f_maps, r1, r2, att_type, 'decoder', alpha, drop_path_rate=drop_path_rate) for i in # 2 ** i
              range(num_layers)])
         self.conv_out = nn.Conv1d(num_f_maps, num_classes, 1)
 
@@ -300,10 +334,33 @@ class Decoder(nn.Module):
         return out, feature
     
 class MyTransformer(nn.Module):
-    def __init__(self, num_decoders, num_layers, r1, r2, num_f_maps, input_dim, num_classes, channel_masking_rate):
+    def __init__(self, num_decoders, num_layers, r1, r2, num_f_maps, input_dim, num_classes, channel_masking_rate, drop_path_rate=0.3, encoder_only=False):
         super(MyTransformer, self).__init__()
+        self.encoder_only = encoder_only
         self.encoder = Encoder(num_layers, r1, r2, num_f_maps, input_dim, num_classes, channel_masking_rate, att_type='sliding_att', alpha=1)
-        self.decoders = nn.ModuleList([copy.deepcopy(Decoder(num_layers, r1, r2, num_f_maps, num_classes, num_classes, att_type='sliding_att', alpha=exponential_descrease(s))) for s in range(num_decoders)]) # num_decoders
+        if encoder_only:
+            self.decoders = nn.ModuleList([copy.deepcopy(Encoder(num_layers, r1, r2, num_f_maps, num_classes, num_classes, channel_masking_rate, att_type='sliding_att', alpha=exponential_descrease(s))) for s in range(num_decoders)]) # num_decoders
+        else:
+            self.decoders = nn.ModuleList([copy.deepcopy(Decoder(num_layers, r1, r2, num_f_maps, num_classes, num_classes, att_type='sliding_att', alpha=exponential_descrease(s))) for s in range(num_decoders)]) # num_decoders
+        
+    def forward(self, x, mask):
+        out, feature = self.encoder(x, mask)
+        outputs = out.unsqueeze(0)
+        
+        for decoder in self.decoders:
+            if not self.encoder_only:
+                out, feature = decoder(F.softmax(out, dim=1) * mask[:, 0:1, :], feature* mask[:, 0:1, :], mask)
+            else:
+                out, feature = decoder(F.softmax(out, dim=1) * mask[:, 0:1, :], mask)
+            outputs = torch.cat((outputs, out.unsqueeze(0)), dim=0)
+ 
+        return outputs
+
+class MaTransformer(nn.Module):
+    def __init__(self, num_decoders, num_layers, r1, r2, num_f_maps, input_dim, num_classes, channel_masking_rate, drop_path_rate=0.3):
+        super(MaTransformer, self).__init__()
+        self.encoder = Encoder(num_layers, r1, r2, num_f_maps, input_dim, num_classes, channel_masking_rate, att_type='sliding_att', alpha=1, mamba=True, drop_path_rate=drop_path_rate)
+        self.decoders = nn.ModuleList([copy.deepcopy(Decoder(num_layers, r1, r2, num_f_maps, num_classes, num_classes, att_type='sliding_att', alpha=exponential_descrease(s), drop_path_rate=drop_path_rate)) for s in range(num_decoders)]) # num_decoders
         
         
     def forward(self, x, mask):
@@ -315,7 +372,7 @@ class MyTransformer(nn.Module):
             outputs = torch.cat((outputs, out.unsqueeze(0)), dim=0)
  
         return outputs
-
+    
 
 class FocalLoss(nn.Module):
     def __init__(self, gamma=2, weight=None):
@@ -328,10 +385,15 @@ class FocalLoss(nn.Module):
         pt = torch.exp(logpt)
         return -((1 - pt) ** self.gamma) * logpt
     
-    
+
+
 class Trainer:
-    def __init__(self, num_layers, r1, r2, num_f_maps, input_dim, num_classes, channel_masking_rate):
-        self.model = MyTransformer(3, num_layers, r1, r2, num_f_maps, input_dim, num_classes, channel_masking_rate)
+    def __init__(self, num_layers, r1, r2, num_f_maps, input_dim, num_classes, channel_masking_rate, mamba=True, drop_path_rate=0.3, args=None):
+        if not mamba:
+            self.model = MyTransformer(3, num_layers, r1, r2, num_f_maps, input_dim, num_classes, channel_masking_rate, encoder_only=False)
+        else:
+            self.model = MaTransformer(3, num_layers, r1, r2, num_f_maps, input_dim, num_classes, channel_masking_rate, drop_path_rate=drop_path_rate)
+        self.ce = nn.CrossEntropyLoss(ignore_index=-100)
 
         print('Model Size: ', sum(p.numel() for p in self.model.parameters()))
         self.mse = nn.MSELoss(reduction='none')
@@ -352,11 +414,15 @@ class Trainer:
             class_wise_total = [0] * self.num_classes
             total = 0
 
+            total_num = len(batch_gen.list_of_examples)
+            bar = tqdm(total=total_num, desc='Training', unit='batch')
             while batch_gen.has_next():
                 batch_input, batch_target, mask, vids = batch_gen.next_batch(batch_size, False)
                 batch_input, batch_target, mask = batch_input.to(device), batch_target.to(device), mask.to(device)
                 optimizer.zero_grad()
                 ps = self.model(batch_input, mask)
+                
+
 
                 weights = torch.zeros(self.num_classes, device=device)
                 for i in range(self.num_classes):
@@ -364,10 +430,9 @@ class Trainer:
             
                 non_zero_weights_idx = torch.where(weights != 0)[0]
                 weights[non_zero_weights_idx] = 1 / weights[non_zero_weights_idx]
-                weights[non_zero_weights_idx] = weights[non_zero_weights_idx] / torch.sum(weights[non_zero_weights_idx])
+                weights[non_zero_weights_idx] = weights[non_zero_weights_idx] / torch.sum(weights[non_zero_weights_idx]) * self.num_classes
 
                 self.ce = FocalLoss(weight=weights)
-
                 loss = 0
                 for p in ps:
                     loss += self.ce(p.transpose(2, 1).contiguous().view(-1, self.num_classes), batch_target.view(-1))
@@ -380,6 +445,7 @@ class Trainer:
                 optimizer.step()
 
                 _, predicted = torch.max(ps.data[-1], 1)
+
                 correct += ((predicted == batch_target).float() * mask[:, 0, :].squeeze(1)).sum().item()
                 total += torch.sum(mask[:, 0, :]).item()
 
@@ -389,7 +455,12 @@ class Trainer:
                     class_wise_corr[i] += ((predicted == batch_target).float() * mask[:, 0, :].squeeze(1) * (batch_target == i).float()).sum().item()
                     class_wise_total[i] += ((mask[:, 0, :].squeeze(1) * (batch_target == i).float()).sum().item())
 
-            if (epoch + 1) % 10 == 0 and batch_gen_tst is not None:
+                bar.update(batch_size)
+                bar.set_postfix(loss=loss.item(), acc=float(correct) / total)
+                bar.refresh()
+            bar.close()
+
+            if (epoch + 1) % 1 == 0 and batch_gen_tst is not None:
                 for i in range(len(ps)):
                     confidence, predicted = torch.max(F.softmax(ps[i], dim=1).data, 1)
                     confidence, predicted = confidence.squeeze(), predicted.squeeze()
@@ -439,6 +510,9 @@ class Trainer:
                     class_wise_total[i] += ((mask[:, 0, :].squeeze(1) * (batch_target == i).float()).sum().item())
         accs = [float(class_wise_corr[i]) / class_wise_total[i] if class_wise_total[i] != 0 else 1 for i in range(self.num_classes)]
         print("Class wise accs: ", [round(acc, 2) for acc in accs])
+        
+        recalls = [float(class_wise_corr[i]) / class_wise_total[i] if class_wise_total[i] != 0 else 1 for i in range(self.num_classes)]
+        print("Class wise recall: ", [round(rec, 2) for rec in recalls])
 
         acc = float(correct) / total
         print("---[epoch %d]---: tst acc = %f" % (epoch + 1, acc))

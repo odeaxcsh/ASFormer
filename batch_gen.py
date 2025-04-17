@@ -100,16 +100,6 @@ class BatchGenerator(object):
             for i in range(len(classes)):
                 classes[i] = self.actions_dict[content[i]]
 
-            keep_indices = []
-            for i, c in enumerate(target):
-                if c != 0:
-                    keep_indices.append(i)
-                elif np.random.rand() < 0.2:
-                    keep_indices.append(i)
-
-            features = features[:, keep_indices]
-            classes = classes[keep_indices]
-
             feature = features[:, ::self.sample_rate]
             target = classes[::self.sample_rate]
             batch_input.append(feature)

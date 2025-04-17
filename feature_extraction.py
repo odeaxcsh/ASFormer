@@ -12,6 +12,7 @@ def load_i3d_model(device):
     if hasattr(model, "blocks"):
         try:
             model.blocks[6].proj = torch.nn.Identity()
+            
         except IndexError:
             if hasattr(model, "head"):
                 model.head.proj = torch.nn.Identity()
