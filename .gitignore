@@ -4,6 +4,7 @@ raw_videos/
 augmented_videos/
 augmented_labels/
 visual_features/
+landmark_features/
 models/
 results/
 __pycache__/

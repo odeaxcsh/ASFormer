@@ -7,6 +7,21 @@ import numpy as np
 import random
 from grid_sampler import GridSampler, TimeWarpLayer
 
+
+
+from collections import Counter
+def label_downsample(label, chunk_size, stride):
+
+    new_label = []
+    for i in range(0, len(label), stride):
+        label_chunk = label[i:i + chunk_size]
+        label_counter = Counter(label_chunk)
+        most_common_label, count = label_counter.most_common(1)[0]
+        new_label.append(most_common_label)
+
+    return np.array(new_label)
+
+
 class BatchGenerator(object):
     def __init__(self, num_classes, actions_dict, gt_path, features_path, sample_rate):
         self.index = 0
@@ -96,12 +111,14 @@ class BatchGenerator(object):
             features = np.load(batch_features[idx])
             file_ptr = open(batch_gts[idx], 'r')
             content = file_ptr.read().split('\n')[:-1]
-            classes = np.zeros(min(np.shape(features)[1], len(content)))
+            classes = np.zeros(len(content))
             for i in range(len(classes)):
                 classes[i] = self.actions_dict[content[i]]
 
+            # classes = label_downsample(classes, chunk_size=60, stride=30)
             feature = features[:, ::self.sample_rate]
             target = classes[::self.sample_rate]
+            
             batch_input.append(feature)
             batch_target.append(target)
 

@@ -11,7 +11,8 @@ import random
 
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-seed = 19980125 # my birthday, :)
+seed = 19980125 # my birthday, :) # you be old bro
+seed = 20020516 # My birthday, Me be oldie too
 random.seed(seed)
 torch.manual_seed(seed)
 torch.cuda.manual_seed_all(seed)
@@ -26,7 +27,7 @@ parser.add_argument('--result_dir', default='results')
 
 args = parser.parse_args()
  
-num_epochs = 120
+num_epochs = 60
 lr = 5e-4
 num_layers = 10
 num_f_maps = 64
@@ -39,8 +40,8 @@ channel_mask_rate = 0.3
 # use the full temporal resolution @ 15fps
 sample_rate = 1
 if args.dataset == "Ours":
-    lr = 5e-4
-    sample_rate = 4 # @ 30fps
+    lr = 1e-4
+    sample_rate = 2 # @ 30fps
 
 # sample input features @ 15fps instead of 30 fps
 # for 50salads, and up-sample the output to 30 fps

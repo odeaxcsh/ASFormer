@@ -389,10 +389,14 @@ class FocalLoss(nn.Module):
 
 class Trainer:
     def __init__(self, num_layers, r1, r2, num_f_maps, input_dim, num_classes, channel_masking_rate, mamba=True, drop_path_rate=0.3, args=None):
+
+        
         if not mamba:
             self.model = MyTransformer(3, num_layers, r1, r2, num_f_maps, input_dim, num_classes, channel_masking_rate, encoder_only=False)
         else:
             self.model = MaTransformer(3, num_layers, r1, r2, num_f_maps, input_dim, num_classes, channel_masking_rate, drop_path_rate=drop_path_rate)
+
+
         self.ce = nn.CrossEntropyLoss(ignore_index=-100)
 
         print('Model Size: ', sum(p.numel() for p in self.model.parameters()))
@@ -453,7 +457,7 @@ class Trainer:
 
                 for i in range(self.num_classes):
                     class_wise_corr[i] += ((predicted == batch_target).float() * mask[:, 0, :].squeeze(1) * (batch_target == i).float()).sum().item()
-                    class_wise_total[i] += ((mask[:, 0, :].squeeze(1) * (batch_target == i).float()).sum().item())
+                    class_wise_total[i] += ((mask[:, 0, :].squeeze(1) * (predicted == i).float()).sum().item())
 
                 bar.update(batch_size)
                 bar.set_postfix(loss=loss.item(), acc=float(correct) / total)
@@ -495,6 +499,7 @@ class Trainer:
 
         class_wise_corr = [0] * self.num_classes
         class_wise_total = [0] * self.num_classes
+        class_wise_predicted = [0] * self.num_classes
 
         with torch.no_grad():
             while batch_gen_tst.has_next():
@@ -508,13 +513,16 @@ class Trainer:
                 for i in range(self.num_classes):
                     class_wise_corr[i] += ((predicted == batch_target).float() * mask[:, 0, :].squeeze(1) * (batch_target == i).float()).sum().item()
                     class_wise_total[i] += ((mask[:, 0, :].squeeze(1) * (batch_target == i).float()).sum().item())
-        accs = [float(class_wise_corr[i]) / class_wise_total[i] if class_wise_total[i] != 0 else 1 for i in range(self.num_classes)]
+                    class_wise_predicted[i] += ((mask[:, 0, :].squeeze(1) * (predicted == i).float()).sum().item())
+
+        accs = [float(class_wise_corr[i]) / class_wise_predicted[i] if class_wise_predicted[i] != 0 else 1 for i in range(self.num_classes)]
         print("Class wise accs: ", [round(acc, 2) for acc in accs])
         
         recalls = [float(class_wise_corr[i]) / class_wise_total[i] if class_wise_total[i] != 0 else 1 for i in range(self.num_classes)]
         print("Class wise recall: ", [round(rec, 2) for rec in recalls])
 
         acc = float(correct) / total
+
         print("---[epoch %d]---: tst acc = %f" % (epoch + 1, acc))
         print("--------------------------------------------------")
 

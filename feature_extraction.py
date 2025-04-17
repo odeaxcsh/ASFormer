@@ -6,20 +6,24 @@ import argparse
 import glob
 import tqdm
 
-def load_i3d_model(device):
+def load_i3d_model(device, cutoff=6):
     model = torch.hub.load("facebookresearch/pytorchvideo", "i3d_r50", pretrained=True)
     model.eval().to(device)
+
     if hasattr(model, "blocks"):
         try:
-            model.blocks[6].proj = torch.nn.Identity()
+            model.blocks[cutoff].proj = torch.nn.Identity()
+            print(f'I3D model projection layer at index {cutoff} replaced with Identity.')
             
         except IndexError:
             if hasattr(model, "head"):
                 model.head.proj = torch.nn.Identity()
+                print('I3D model head projection layer replaced with Identity.')
+
     return model
 
 
-def extract_i3d_features(frames, model, device, chunk_size=16, stride=1, batch_size=16):
+def extract_i3d_features(frames, model, device, chunk_size=16, stride=1, batch_size=4):
     feats = []
     chunk_batch = []
 
@@ -27,6 +31,8 @@ def extract_i3d_features(frames, model, device, chunk_size=16, stride=1, batch_s
         with torch.no_grad():
             batch_tensor = torch.stack(batch).to(device)  # (B, 3, T, H, W)
             out = model(batch_tensor).cpu()
+        
+        print(f"Batch size: {batch_tensor.shape[0]}, Output shape: {out.shape}")
         return out
 
     i = 0
@@ -108,11 +114,14 @@ for video_path in video_paths:
         frame_rgb = frame_rgb[start_y:start_y + crop_size, start_x:start_x + crop_size]
         
         # Resize to 224x224 for I3D
-        frame_rgb = cv2.resize(frame_rgb, (224, 224))
+        # frame_rgb = cv2.resize(frame_rgb, (224, 224))
+        # half the size
+        frame_rgb = cv2.resize(frame_rgb, (frame_rgb.shape[1] // 2, frame_rgb.shape[0] // 2))
+
         if args.type == "rgb":
             normalized_frame = frame_rgb.astype(np.float32) / 255.0
-            mean = [0.45, 0.45, 0.45]
-            std = [0.225, 0.225, 0.225]
+            mean = np.array([0.45, 0.45, 0.45]).reshape((1, 1, 3))
+            std = np.array([0.225, 0.225, 0.225]).reshape((1, 1, 3))
             normalized_frame = (normalized_frame - mean) / std
             frames.append(normalized_frame)
 
@@ -138,7 +147,7 @@ for video_path in video_paths:
     if frames:
         print(f"Extracting features from {len(frames)} frames of size {frames[0].shape}...")
        
-        visual_feats = extract_i3d_features(frames, i3d_model, device, chunk_size=30, stride=1)
+        visual_feats = extract_i3d_features(frames, i3d_model, device, chunk_size=60, stride=30)
         
 
         np.save(visual_out_path, visual_feats.T)
