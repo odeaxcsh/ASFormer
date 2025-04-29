@@ -6,21 +6,54 @@ import argparse
 import glob
 import tqdm
 
+import torch.nn as nn
+import torchvision.models as models
+import torch.hub
+
+class I3DResNetCombined(nn.Module):
+    def __init__(self, device="cuda"):
+        super().__init__()
+        # Load I3D (3D CNN)
+        self.i3d = torch.hub.load("facebookresearch/pytorchvideo", "i3d_r50", pretrained=True, trust_repo=True)
+        if hasattr(self.i3d, "blocks"):
+            try:
+                self.i3d.blocks[6].proj = nn.Identity()
+            except:
+                if hasattr(self.i3d, "head"):
+                    self.i3d.head.proj = nn.Identity()
+
+        self.resnet = models.resnet18(pretrained=True)
+        self.resnet.fc = nn.Identity()
+
+        self.i3d.to(device)
+        self.resnet.to(device)
+
+
+    def forward(self, x):
+        B, C, T, H, W = x.shape
+
+        x_i3d = x  # already in correct shape
+        i3d_feat = self.i3d(x_i3d)  # (B, D1)
+
+        x_resnet = x.permute(0, 2, 1, 3, 4).reshape(B * T, C, H, W)  # (B*T, C, H, W)
+
+        mean = torch.tensor([0.485, 0.456, 0.406], device=x.device).view(1, 3, 1, 1)
+        std = torch.tensor([0.229, 0.224, 0.225], device=x.device).view(1, 3, 1, 1)
+        x_resnet = (x_resnet / 255.0 - mean) / std
+
+        resnet_feats = self.resnet(x_resnet)  # (B*T, D2)
+        resnet_feats = resnet_feats.view(B, T, -1).mean(dim=1)  # (B, D2)
+
+        return torch.cat([i3d_feat, resnet_feats], dim=1)  # (B, D1 + D2)
+    
+
 def load_i3d_model(device, cutoff=6):
-    model = torch.hub.load("facebookresearch/pytorchvideo", "i3d_r50", pretrained=True)
-    model.eval().to(device)
+    model = I3DResNetCombined()
+    model = model.to(device)
 
-    if hasattr(model, "blocks"):
-        try:
-            model.blocks[cutoff].proj = torch.nn.Identity()
-            print(f'I3D model projection layer at index {cutoff} replaced with Identity.')
-            
-        except IndexError:
-            if hasattr(model, "head"):
-                model.head.proj = torch.nn.Identity()
-                print('I3D model head projection layer replaced with Identity.')
-
+    model.eval()
     return model
+
 
 
 def extract_i3d_features(frames, model, device, chunk_size=16, stride=1, batch_size=4):
@@ -103,7 +136,7 @@ for video_path in video_paths:
         ret, frame_rgb = cap.read()
         if not ret:
             break
-        frame_rgb = cv2.cvtColor(frame_rgb, cv2.COLOR_BGR2RGB)
+        # frame_rgb = cv2.cvtColor(frame_rgb, cv2.COLOR_BGR2RGB)
 
         # Original Size: (1280 x 720)
         # Crop the center square of size 720x720
@@ -113,10 +146,11 @@ for video_path in video_paths:
         start_y = (h - crop_size) // 2
         frame_rgb = frame_rgb[start_y:start_y + crop_size, start_x:start_x + crop_size]
         
+
         # Resize to 224x224 for I3D
-        # frame_rgb = cv2.resize(frame_rgb, (224, 224))
+        frame_rgb = cv2.resize(frame_rgb, (224, 224))
         # half the size
-        frame_rgb = cv2.resize(frame_rgb, (frame_rgb.shape[1] // 2, frame_rgb.shape[0] // 2))
+        # frame_rgb = cv2.resize(frame_rgb, (frame_rgb.shape[1] // 2, frame_rgb.shape[0] // 2))
 
         if args.type == "rgb":
             normalized_frame = frame_rgb.astype(np.float32) / 255.0
@@ -138,11 +172,11 @@ for video_path in video_paths:
                 
     cap.release()
 
-    # if video_path == video_paths[0]:
-    #     for i in range(0, len(frames)):
-    #         cv2.imshow("frame", frames[i].transpose(1, 0, 2))
-    #         cv2.waitKey(1)  # Display at 60 FPS
-    # cv2.destroyAllWindows()
+    if video_path == video_paths[0]:
+        for i in range(0, len(frames)):
+            cv2.imshow("frame", frames[i].transpose(1, 0, 2))
+            cv2.waitKey(1)  # Display at 60 FPS
+    cv2.destroyAllWindows()
     
     if frames:
         print(f"Extracting features from {len(frames)} frames of size {frames[0].shape}...")

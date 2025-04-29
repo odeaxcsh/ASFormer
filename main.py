@@ -24,9 +24,15 @@ parser.add_argument('--dataset', default="50salads")
 parser.add_argument('--split', default='1')
 parser.add_argument('--model_dir', default='models')
 parser.add_argument('--result_dir', default='results')
+parser.add_argument('--visual-feature', action='store_true')
+parser.add_argument('--pose-feature', action='store_true')
 
 args = parser.parse_args()
- 
+if args.visual_feature and args.pose_feature:
+    print("Please choose one feature type.")
+    exit(0)
+
+
 num_epochs = 60
 lr = 5e-4
 num_layers = 10
@@ -37,11 +43,15 @@ bz = 1
 channel_mask_rate = 0.3
 
 
-# use the full temporal resolution @ 15fps
 sample_rate = 1
 if args.dataset == "Ours":
-    lr = 1e-4
-    sample_rate = 2 # @ 30fps
+    visual_feature = args.visual_feature or not args.pose_feature
+    # num_f_maps = 128
+    # num_layers = 2 # Slightly less complex
+    sample_rate = 1 # @ 30fps
+    num_epochs = 1200
+    features_dim = (2048 if visual_feature else 225)
+
 
 # sample input features @ 15fps instead of 30 fps
 # for 50salads, and up-sample the output to 30 fps
@@ -59,6 +69,15 @@ if args.dataset == 'breakfast':
 vid_list_file = "./data/"+args.dataset+"/splits/train.split"+args.split+".bundle"
 vid_list_file_tst = "./data/"+args.dataset+"/splits/test.split"+args.split+".bundle"
 features_path = "./data/"+args.dataset+"/features/"
+
+if args.dataset == 'Ours':
+    visual_feature = args.visual_feature or not args.pose_feature
+    if visual_feature:
+        features_path = "./data/Ours/features/visual/"
+    else:
+        features_path = "./data/Ours/features/pose/"
+
+    
 gt_path = "./data/"+args.dataset+"/groundTruth/"
  
 mapping_file = "./data/"+args.dataset+"/mapping.txt"

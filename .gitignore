@@ -11,3 +11,5 @@ __pycache__/
 
 annotations.xml
 tmp/
+pose_models/
+Figures/
